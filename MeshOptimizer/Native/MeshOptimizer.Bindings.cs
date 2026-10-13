@@ -883,7 +883,7 @@ public static unsafe partial class MeshOpt
     /// Converts a previously vertex cache optimized triangle list to triangle strip, stitching strips using restart index or degenerate triangles
     /// Returns the number of indices in the resulting strip, with destination containing new index data
     /// For maximum efficiency the index buffer being converted has to be optimized for vertex cache first.
-    /// Using restart indices can result in ~5-10% smaller index buffers, but on some GPUs restart indices may result in decreased performance.
+    /// Using restart indices can result in ~10% smaller index buffers, but on some GPUs restart indices may result in decreased performance.
     /// destination must contain enough space for the target index buffer, worst case can be computed with meshopt_stripifyBound
     /// restart_index should be 0xffff or 0xffffffff depending on index size, or 0 to use degenerate triangles
     /// </summary>
@@ -1261,16 +1261,5 @@ public static unsafe partial class MeshOpt
     /// </summary>
     [LibraryImport(LibraryName, EntryPoint = "meshopt_setAllocator")]
     public static partial void SetAllocator(delegate* unmanaged[Cdecl]<nuint, void*> allocate, delegate* unmanaged[Cdecl]<void*, void> deallocate);
-
-    /// <summary>
-    /// Experimental: Enable allocation cache
-    /// Allocates a fixed number of memory blocks to be used for temporary allocations in the library.
-    /// Each thread performing temporary allocations can only use one block at a time; block count should be set according to expected concurrency.
-    /// Once cache is setup, using meshopt_setAllocator is prohibited; cache needs to be disabled (using block_count=0) before reconfiguring allocation callbacks.
-    /// This function is not thread safe and must not be called concurrently with any other meshopt_ function.
-    /// block_count can be at most 64; when set to 0, the allocation cache is disabled.
-    /// </summary>
-    [LibraryImport(LibraryName, EntryPoint = "meshopt_setAllocatorCache")]
-    public static partial void SetAllocatorCache(nuint block_count, nuint block_size);
 
 }
