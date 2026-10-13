@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>MeshOptimizer.Net</AssemblyName>
+    <RootNamespace>MeshOptimizer</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PackageId>MeshOptimizer</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>YourName</Authors>
+    <Description>Multiplatform .NET bindings for meshoptimizer</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" Condition="Exists('..\README.md')" />
+  </ItemGroup>
+
+  <!-- Package native RID binaries with the library -->
+  <ItemGroup>
+    <Content Include="..\runtimes\**\*.*" Condition="Exists('..\runtimes')">
+      <PackagePath>runtimes\%(RecursiveDir)%(Filename)%(Extension)</PackagePath>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>runtimes\%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
+      <Visible>false</Visible>
+    </Content>
+  </ItemGroup>
+
+</Project>

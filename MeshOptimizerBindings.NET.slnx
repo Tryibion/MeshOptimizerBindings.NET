@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="MeshOptimizer/MeshOptimizer.csproj" />
+  <Project Path="MeshOptimizer.Tests/MeshOptimizer.Tests.csproj" />
+  <Project Path="BindingGenerator/BindingGenerator.csproj" />
+</Solution>

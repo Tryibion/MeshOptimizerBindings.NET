@@ -1,0 +1,284 @@
+name: Track Upstream & Build meshoptimizer
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force_tag:
+        description: 'Force a specific tag (e.g. v1.3). Leave blank to auto-detect latest.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-version:
+    name: Check Upstream Tag
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    outputs:
+      should_release: ${{ steps.detect.outputs.should_release }}
+      tag_name: ${{ steps.detect.outputs.tag_name }}
+    steps:
+      - name: Detect Latest Tag
+        id: detect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          
+          if [ -n "${{ github.event.inputs.force_tag }}" ]; then
+            TAG="${{ github.event.inputs.force_tag }}"
+            echo "Manual override specified: $TAG"
+          else
+            TAG=$(gh api repos/zeux/meshoptimizer/releases/latest --jq '.tag_name')
+            echo "Latest upstream release: $TAG"
+          fi
+
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "::error::Could not determine release tag."
+            exit 1
+          fi
+
+          if [ "${{ github.event_name }}" = "schedule" ] && gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already built and published in this repository. Skipping scheduled run."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Building version $TAG (event: ${{ github.event_name }})."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+  generate-bindings:
+    name: Generate C# Bindings
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Workflow Repository
+        uses: actions/checkout@v4
+
+      - name: Fetch meshoptimizer Header
+        run: |
+          mkdir -p meshopt-src/src
+          curl -sSL "https://raw.githubusercontent.com/zeux/meshoptimizer/${{ needs.check-version.outputs.tag_name }}/src/meshoptimizer.h" -o meshopt-src/src/meshoptimizer.h
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run Binding Generator
+        run: dotnet run --project BindingGenerator/BindingGenerator.csproj -- meshopt-src/src/meshoptimizer.h MeshOptimizer.Bindings.cs
+
+      - name: Upload Generated Bindings Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: csharp-bindings
+          path: MeshOptimizer.Bindings.cs
+
+  compile:
+    name: Build (${{ matrix.rid }})
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            output_dir: runtimes/win-x64/native
+            arch: x64
+          - os: windows-latest
+            rid: win-arm64
+            output_dir: runtimes/win-arm64/native
+            arch: arm64
+          - os: ubuntu-latest
+            rid: linux-x64
+            output_dir: runtimes/linux-x64/native
+            arch: x64
+          - os: ubuntu-latest
+            rid: linux-arm64
+            output_dir: runtimes/linux-arm64/native
+            arch: arm64
+          - os: macos-latest
+            rid: osx
+            output_dir: runtimes/osx/native
+            arch: universal
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Fetch Upstream Source
+        shell: bash
+        run: |
+          mkdir -p meshopt-src
+          git clone --depth 1 --branch ${{ needs.check-version.outputs.tag_name }} https://github.com/zeux/meshoptimizer.git meshopt-src
+
+      - name: Initialize Output Directory
+        shell: bash
+        run: mkdir -p ${{ matrix.output_dir }}
+
+      - name: Compile Windows (${{ matrix.arch }})
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $vcVars = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
+          $vcArch = if ("${{ matrix.arch }}" -eq "arm64") { "x64_arm64" } else { "x64" }
+          $outDir = "${{ matrix.output_dir }}" -replace '/', '\'
+          cmd /c "`"$vcVars`" $vcArch && cl.exe /nologo /O2 /MT /LD /DMESHOPTIMIZER_API=__declspec(dllexport) meshopt-src\src\*.cpp /Fe:$outDir\meshoptimizer.dll /link /IMPLIB:meshoptimizer.lib"
+
+      - name: Compile Linux x64
+        if: matrix.os == 'ubuntu-latest' && matrix.arch == 'x64'
+        run: |
+          g++ -O3 -s -shared -fPIC -std=c++11 \
+            -fvisibility=hidden \
+            -DMESHOPTIMIZER_API='__attribute__((visibility("default")))' \
+            meshopt-src/src/*.cpp \
+            -o ${{ matrix.output_dir }}/libmeshoptimizer.so
+
+      - name: Compile Linux ARM64
+        if: matrix.os == 'ubuntu-latest' && matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update && sudo apt-get install -y g++-aarch64-linux-gnu
+          aarch64-linux-gnu-g++ -O3 -s -shared -fPIC -std=c++11 \
+            -fvisibility=hidden \
+            -DMESHOPTIMIZER_API='__attribute__((visibility("default")))' \
+            meshopt-src/src/*.cpp \
+            -o ${{ matrix.output_dir }}/libmeshoptimizer.so
+
+      - name: Compile macOS Universal
+        if: matrix.os == 'macos-latest'
+        run: |
+          clang++ -O3 -shared -std=c++11 \
+            -arch arm64 -arch x86_64 \
+            -fvisibility=hidden \
+            -DMESHOPTIMIZER_API='__attribute__((visibility("default")))' \
+            -install_name @rpath/libmeshoptimizer.dylib \
+            meshopt-src/src/*.cpp \
+            -o ${{ matrix.output_dir }}/libmeshoptimizer.dylib
+          codesign -s - --force ${{ matrix.output_dir }}/libmeshoptimizer.dylib
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: meshopt-${{ matrix.rid }}
+          path: ${{ matrix.output_dir }}/*
+          if-no-files-found: error
+
+  publish:
+    name: Package & Release
+    needs: [check-version, compile, generate-bindings]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Workflow Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Download Build Slices
+        uses: actions/download-artifact@v4
+        with:
+          path: staging
+
+      - name: Assemble Release Assets, Test & Pack
+        env:
+          TAG: ${{ needs.check-version.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p runtimes/win-x64/native
+          mkdir -p runtimes/win-arm64/native
+          mkdir -p runtimes/linux-x64/native
+          mkdir -p runtimes/linux-arm64/native
+          mkdir -p runtimes/osx/native
+          mkdir -p runtimes/osx-x64/native
+          mkdir -p runtimes/osx-arm64/native
+
+          cp staging/meshopt-win-x64/meshoptimizer.dll runtimes/win-x64/native/
+          cp staging/meshopt-win-arm64/meshoptimizer.dll runtimes/win-arm64/native/
+          cp staging/meshopt-linux-x64/libmeshoptimizer.so runtimes/linux-x64/native/
+          cp staging/meshopt-linux-arm64/libmeshoptimizer.so runtimes/linux-arm64/native/
+          cp staging/meshopt-osx/libmeshoptimizer.dylib runtimes/osx/native/
+          cp staging/meshopt-osx/libmeshoptimizer.dylib runtimes/osx-x64/native/
+          cp staging/meshopt-osx/libmeshoptimizer.dylib runtimes/osx-arm64/native/
+
+          cp staging/csharp-bindings/MeshOptimizer.Bindings.cs ./
+          cp staging/csharp-bindings/MeshOptimizer.Bindings.cs MeshOptimizer/Native/MeshOptimizer.Bindings.cs
+
+          if [ -e "external/meshoptimizer/.git" ]; then
+            git -C external/meshoptimizer fetch --tags origin
+            git -C external/meshoptimizer checkout "$TAG"
+          fi
+
+          RAW_VER="${TAG#v}"
+          if [[ "$RAW_VER" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            PKG_VERSION="${RAW_VER}.0"
+          else
+            PKG_VERSION="$RAW_VER"
+          fi
+
+          dotnet test MeshOptimizer.slnx -c Release
+          dotnet pack MeshOptimizer/MeshOptimizer.csproj -c Release -p:Version="$PKG_VERSION" -o ./nupkg
+
+          ZIP_NAME="meshoptimizer-${TAG}-bundle.zip"
+          zip -9 -r "$ZIP_NAME" runtimes/ MeshOptimizer.Bindings.cs
+
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+
+      - name: Commit & Push Updated Bindings and Runtimes
+        env:
+          TAG: ${{ needs.check-version.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add MeshOptimizer/Native/MeshOptimizer.Bindings.cs runtimes/
+          if [ -e "external/meshoptimizer/.git" ]; then
+            git add external/meshoptimizer
+          fi
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update meshoptimizer bindings and runtimes for $TAG [skip ci]"
+            git push origin "HEAD:${{ github.ref_name }}"
+          else
+            echo "No repository changes to commit."
+          fi
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.check-version.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          TARGET_SHA=$(git rev-parse HEAD)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP_NAME" MeshOptimizer.Bindings.cs ./nupkg/*.nupkg --clobber
+          else
+            gh release create "$TAG" "$ZIP_NAME" MeshOptimizer.Bindings.cs ./nupkg/*.nupkg \
+              --target "$TARGET_SHA" \
+              --title "meshoptimizer $TAG" \
+              --notes "Automated multiplatform release compiled from [zeux/meshoptimizer@$TAG](https://github.com/zeux/meshoptimizer/releases/tag/$TAG)."
+          fi
+
+
