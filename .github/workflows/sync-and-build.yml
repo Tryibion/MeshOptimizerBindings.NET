@@ -235,7 +235,7 @@ jobs:
             PKG_VERSION="$RAW_VER"
           fi
 
-          dotnet test MeshOptimizer.slnx -c Release
+          dotnet test MeshOptimizerBindings.NET.slnx -c Release
           dotnet pack MeshOptimizer/MeshOptimizer.csproj -c Release -p:Version="$PKG_VERSION" -o ./nupkg
 
           ZIP_NAME="meshoptimizer-${TAG}-bundle.zip"

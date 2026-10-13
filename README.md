@@ -3,7 +3,7 @@
 Automated multiplatform .NET bindings for [zeux/meshoptimizer](https://github.com/zeux/meshoptimizer) targeting `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, `osx-x64`, and `osx-arm64`.
 
 ## Repository Architecture
-- `MeshOptimizer.slnx`: Visual Studio solution file using the modern XML format.
+- `MeshOptimizerBindings.NET.slnx`: Visual Studio solution file using the modern XML format.
 - `MeshOptimizer/`:
   - `MeshOptimizer.csproj`: Configured for .NET 10 with unsafe blocks and `Content` items mapping `runtimes/{rid}/native/` to output/package targets.
   - `MeshOptimizer.cs`: Hand-written, allocation-free safe wrapper using `Span<T>` and `ReadOnlySpan<T>`.
